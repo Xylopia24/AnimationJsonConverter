@@ -515,11 +515,512 @@ def process_tag_enhancement_mode():
 
 def convert_animation(old_json, source_file, issues_log):
     """Convert old animation format to new format"""
-    # ...existing code...
+    new_json = {
+        "DevNote": f"This is a conversion JSON for {old_json.get('PackName', 'Unknown')} so it can be used with SCake 0.6+.",
+        "ACakeVersion": "0005009",
+        "PackName": old_json.get("PackName", "Unknown"),
+        "PackAuthor": old_json.get("PackAuthor", "Unknown"),
+        "SCakeAnimSlot": [],
+        "SCakeAnimEvent": []
+    }
+    
+    # Map to track unique IDs for animations
+    anim_map = {}
+    
+    # Track climax animations for each animation
+    climax_map = {}
+    
+    # Track inferred tags for each animation
+    animation_tags = {}
+    
+    # Process RegisterAnim entries
+    for idx, anim in enumerate(old_json.get("RegisterAnim", [])):
+        try:
+            unique_id = anim.get("UniqueAnimID", f"Unknown_{idx}")
+            anim_name = anim.get("AnimName", unique_id)
+            
+            # Get animation paths (typically first is for pal, second for player)
+            anim_paths = anim.get("AnimByPath", [])
+            if not anim_paths:
+                issues_log.log_issue(source_file, f"Animation {unique_id}", "No animation paths found", anim)
+                continue
+            
+            # Extract tags or infer them if missing
+            tags = anim.get("Tags", [])
+            if not tags and ENABLE_TAG_INFERENCE:
+                # Infer tags from animation name
+                name_tags = infer_tags_from_name(anim_name)
+                
+                # Infer tags from actor count
+                actor_count = len(anim_paths)
+                if actor_count in DEFAULT_ACTOR_COUNT_TAGS:
+                    name_tags.extend(DEFAULT_ACTOR_COUNT_TAGS[actor_count])
+                
+                # Infer tags from act types
+                act_types_list = []
+                for act_type in anim.get("ActTypes", []):
+                    act = act_type.get("ActType", "")
+                    location = act_type.get("ActLocation", "")
+                    
+                    if act and location:
+                        # Normalize both
+                        normalized_location = normalize_act_location(location)
+                        normalized_act = normalize_act_type(act, location)
+                        act_types_list.append(f"{normalized_act}_{normalized_location}")
+                
+                act_tags = infer_tags_from_act_types(act_types_list)
+                
+                # Combine all inferred tags, remove duplicates
+                tags = list(set(name_tags + act_tags))
+                
+                if tags:
+                    issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                        f"Inferred tags for animation: {', '.join(tags)}", None)
+            
+            # Store tags for later use in events
+            animation_tags[unique_id] = tags
+            
+            # Continue with the existing animation processing
+            has_blowjob_tag = any(tag.lower() == "blowjob" for tag in tags)
+            has_anal_tag = any(tag.lower() == "anal" or "anal" in tag.lower() for tag in tags)
+            has_breast_tag = any(tag.lower() in ["breast", "tits", "boob", "chest"] for tag in tags)
+            
+            # Get act types for equipment determination
+            act_types = anim.get("ActTypes", [])
+            
+            # Create separate entries for each actor
+            for actor_idx, path in enumerate(anim_paths):
+                new_anim = {
+                    "UniqueID": f"{unique_id}_{actor_idx}",
+                    "IsLooping": anim.get("IsLooping", True),
+                    "IsErotic": not anim.get("NonErotic", False),  # Invert NonErotic
+                }
+                
+                # Add tags to animation slot
+                if tags:
+                    new_anim["Tags"] = tags
+                
+                # Process face expressions if available
+                if "FaceExpress" in anim and isinstance(anim["FaceExpress"], list) and len(anim["FaceExpress"]) > actor_idx:
+                    new_anim["FaceExpress"] = anim["FaceExpress"][actor_idx]
+                
+                if "FaceExpressClimax" in anim and isinstance(anim["FaceExpressClimax"], list) and len(anim["FaceExpressClimax"]) > actor_idx:
+                    new_anim["FaceExpressClimax"] = anim["FaceExpressClimax"][actor_idx]
+                
+                # Determine sex equipment requirement based on compatibility and animation types
+                equip_req = []
+                
+                # Check each compatibility entry for more comprehensive requirements
+                if "Compatibility" in anim and anim["Compatibility"]:
+                    for compat in anim["Compatibility"]:
+                        sex_req = compat.get("SexEquipReq", [])
+                        if len(sex_req) > actor_idx:
+                            req = sex_req[actor_idx]
+                            
+                            parsed_req = parse_sex_requirement(req)
+                            if parsed_req:
+                                for equip in parsed_req:
+                                    if equip not in equip_req:
+                                        equip_req.append(equip)
+                            elif req != "None" and req:
+                                issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                                    f"Unknown sex requirement: {req} for actor {actor_idx}", 
+                                                    {"compat": compat})
+                
+                # Check act types for this actor
+                for act_type in act_types:
+                    if act_type.get("ActorSlot") == actor_idx:
+                        act = act_type.get("ActType", "")
+                        location = act_type.get("ActLocation", "")
+                        
+                        if not act or not location:
+                            issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                                f"Incomplete act type for actor {actor_idx}", act_type)
+                            continue
+                        
+                        normalized_location = normalize_act_location(location)
+                        normalized_act = normalize_act_type(act, location)
+                        
+                        if normalized_location == "Oral":
+                            if normalized_act in ["Penetrated", "Sucked"] and "Mouth" not in equip_req:
+                                equip_req.append("Mouth")
+                            elif normalized_act in ["Penetrating", "Sucking"] and "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                        
+                        elif normalized_location == "Vaginal":
+                            if normalized_act == "Penetrated" and "Vagina" not in equip_req:
+                                equip_req.append("Vagina")
+                            elif normalized_act == "Penetrating" and "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                        
+                        elif normalized_location == "Anal":
+                            if normalized_act == "Penetrated" and "Anus" not in equip_req:
+                                equip_req.append("Anus")
+                            elif normalized_act == "Penetrating" and "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                        
+                        elif normalized_location == "Breasts":
+                            if normalized_act == "Penetrated" and "Breasts" not in equip_req:
+                                equip_req.append("Breasts")
+                            elif normalized_act == "Penetrating" and "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                        
+                        elif normalized_location == "Body":
+                            if normalized_act == "Penetrating" and "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                        
+                        elif act == "Masturbation" and location.lower() == "penis":
+                            if "Penis" not in equip_req:
+                                equip_req.append("Penis")
+                
+                for tag in tags:
+                    add_equipment_for_tag(equip_req, tag, actor_idx)
+                
+                if not equip_req and actor_idx == 0:
+                    is_non_human = True
+                    character_ids = set()
+                    
+                    if "Compatibility" in anim and anim["Compatibility"]:
+                        for compat in anim["Compatibility"]:
+                            by_id = compat.get("ByID", [])
+                            if len(by_id) > actor_idx and by_id[actor_idx]:
+                                character_id = by_id[actor_idx]
+                                character_ids.add(character_id)
+                                if is_human_character(character_id):
+                                    is_non_human = False
+                                    break
+                    
+                    if is_non_human:
+                        character_base = get_character_base_id(next(iter(character_ids), ""))
+                        if character_base in DEFAULT_EQUIPMENT:
+                            equip_req.extend(DEFAULT_EQUIPMENT[character_base])
+                        else:
+                            equip_req.extend(DEFAULT_EQUIPMENT["DEFAULT_PAL"])
+                
+                if not equip_req:
+                    equip_req = ["None"]
+                
+                new_anim["SEquipReq"] = equip_req
+                    
+                new_anim["AnimSet"] = []
+                
+                character_ids = set()
+                if "Compatibility" in anim and anim["Compatibility"]:
+                    for compat in anim["Compatibility"]:
+                        by_id = compat.get("ByID", [])
+                        if len(by_id) > actor_idx and by_id[actor_idx]:
+                            character_ids.add(by_id[actor_idx])
+                
+                if not character_ids:
+                    character_ids = {"Unknown"}
+                    issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                        f"No character ID found for actor {actor_idx}", 
+                                        {"compatibility": anim.get("Compatibility", [])})
+                
+                new_anim["AnimSet"].append({
+                    "CharacterID": list(character_ids),
+                    "AssetPath": path
+                })
+                
+                new_json["SCakeAnimSlot"].append(new_anim)
+                
+                if unique_id not in anim_map:
+                    anim_map[unique_id] = []
+                anim_map[unique_id].append(f"{unique_id}_{actor_idx}")
+            
+            # Process LinkClimaxAnims if present
+            if "LinkClimaxAnims" in anim:
+                climax_entries = []
+                
+                # Check if it's a list (original format) or a dictionary (alternate format)
+                if isinstance(anim["LinkClimaxAnims"], list):
+                    # Original list format
+                    climax_entries = anim["LinkClimaxAnims"]
+                elif isinstance(anim["LinkClimaxAnims"], dict):
+                    # Dictionary format with named climax entries
+                    climax_entries = list(anim["LinkClimaxAnims"].values())
+                else:
+                    issues_log.log_issue(source_file, f"Animation {unique_id}",
+                                      f"Unsupported LinkClimaxAnims format: {type(anim['LinkClimaxAnims']).__name__}",
+                                      anim["LinkClimaxAnims"])
+                    continue
+                
+                for climax_idx, climax_anim in enumerate(climax_entries):
+                    # Create a unique ID for the climax animation
+                    climax_id = f"{unique_id}_CLIMAX_{climax_idx}"
+                    
+                    # Get climax animation paths
+                    climax_paths = climax_anim.get("AnimByPath", [])
+                    if not climax_paths:
+                        issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                            f"No paths found for climax animation {climax_idx}", climax_anim)
+                        continue
+                    
+                    # Create animation slots for climax animations
+                    climax_anim_slots = []
+                    for actor_idx, path in enumerate(climax_paths):
+                        if actor_idx >= len(anim_paths):  # Skip if we don't have enough base animations
+                            continue
+                            
+                        climax_slot_id = f"{climax_id}_{actor_idx}"
+                        
+                        # Create new animation slot for climax
+                        new_climax_anim = {
+                            "UniqueID": climax_slot_id,
+                            "IsLooping": climax_anim.get("IsLooping", CLIMAX_DEFAULT_SETTINGS["IsLooping"]),
+                            "IsErotic": True,
+                            "IsClimax": True,
+                            "SEquipReq": new_json["SCakeAnimSlot"][-len(climax_paths) + actor_idx]["SEquipReq"],
+                            "AnimSet": [{
+                                "CharacterID": new_json["SCakeAnimSlot"][-len(climax_paths) + actor_idx]["AnimSet"][0]["CharacterID"],
+                                "AssetPath": path
+                            }]
+                        }
+                        
+                        # Add tags to climax animation slots
+                        if tags:
+                            new_climax_anim["Tags"] = tags
+                        
+                        # Process face expressions for climax if available
+                        if "FaceExpress" in anim and isinstance(anim["FaceExpress"], list) and len(anim["FaceExpress"]) > actor_idx:
+                            new_climax_anim["FaceExpress"] = anim["FaceExpress"][actor_idx]
+                        
+                        if "FaceExpressClimax" in anim and isinstance(anim["FaceExpressClimax"], list) and len(anim["FaceExpressClimax"]) > actor_idx:
+                            new_climax_anim["FaceExpressClimax"] = anim["FaceExpressClimax"][actor_idx]
+                        
+                        # Add to new JSON
+                        new_json["SCakeAnimSlot"].append(new_climax_anim)
+                        climax_anim_slots.append(climax_slot_id)
+                    
+                    # Store climax information for later event processing
+                    slots_to_climax = []
+                    climax_locations = {}
+                    
+                    # Process SlotsToClimax information
+                    if "SlotsToClimax" in climax_anim:
+                        for slot_info in climax_anim["SlotsToClimax"]:
+                            try:
+                                actor_slot = int(slot_info.get("ActorSlot", "0"))
+                                slots_to_climax.append(actor_slot)
+                                climax_locations[actor_slot] = slot_info.get("Location", "Outside")
+                            except ValueError:
+                                # Handle case where ActorSlot might be a string
+                                issues_log.log_issue(source_file, f"Animation {unique_id}", 
+                                                    f"Invalid ActorSlot value in climax info: {slot_info.get('ActorSlot')}", slot_info)
+                    
+                    # Store the mapping
+                    if unique_id not in climax_map:
+                        climax_map[unique_id] = []
+                    
+                    climax_map[unique_id].append({
+                        "slots_to_climax": slots_to_climax,
+                        "climax_anim_slots": climax_anim_slots,
+                        "climax_locations": climax_locations
+                    })
+                
+        except Exception as e:
+            issues_log.log_issue(source_file, f"Animation {idx}", f"Error processing animation: {str(e)}", anim)
+    
+    for event_idx, event in enumerate(old_json.get("RegisterEvent", [])):
+        try:
+            event_id = event.get("UniqueEventID", f"Unknown_Event_{event_idx}")
+            event_name = event.get("EventName", event_id)
+            
+            anim_id = None
+            if event.get("Stages", []):
+                anim_id = event["Stages"][0].get("AnimID", "")
+            
+            if not anim_id or anim_id not in anim_map:
+                issues_log.log_issue(source_file, f"Event {event_id}", 
+                                    f"Animation ID {anim_id} not found in mappings", event)
+                continue
+                
+            new_event = {
+                "UniqueID": event_id,
+                "IsErotic": True,
+                "ActorCount": len(anim_map[anim_id]),
+                "Aggressors": [0],
+                "Stages": []
+            }
+            
+            # Get tags from event, animation, or infer if missing
+            tags = []
+            if "AddTags" in event:
+                tags = event["AddTags"]
+            elif "Addtags" in event:  # Some events use "Addtags" instead of "AddTags"
+                tags = event["Addtags"]
+            elif anim_id in animation_tags and animation_tags[anim_id]:
+                tags = animation_tags[anim_id]
+                issues_log.log_issue(source_file, f"Event {event_id}", 
+                                    f"Using tags from animation: {', '.join(tags)}", None)
+            elif ENABLE_TAG_INFERENCE:
+                # Infer tags from event name
+                name_tags = infer_tags_from_name(event_name)
+                
+                # Infer tags from actor count
+                actor_count = len(anim_map[anim_id])
+                if actor_count in DEFAULT_ACTOR_COUNT_TAGS:
+                    name_tags.extend(DEFAULT_ACTOR_COUNT_TAGS[actor_count])
+                
+                # Combine all inferred tags, remove duplicates
+                tags = list(set(name_tags))
+                
+                if tags:
+                    issues_log.log_issue(source_file, f"Event {event_id}", 
+                                        f"Inferred tags for event: {', '.join(tags)}", None)
+            
+            if tags:
+                new_event["AddTags"] = tags
+            
+            for stage_idx, stage in enumerate(event.get("Stages", [])):
+                stage_name = stage.get("StageName", f"{event_id}_STAGE{stage_idx+1}")
+                stage_anim_id = stage.get("AnimID", "")
+                
+                if stage_anim_id not in anim_map:
+                    issues_log.log_issue(source_file, f"Event {event_id}", 
+                                        f"Stage {stage_idx} animation ID {stage_anim_id} not found in mappings", stage)
+                    continue
+                
+                speed_mod = stage.get("SpeedMod", 1.0)
+                
+                new_stage = {
+                    "Name": stage_name,
+                    "SlotAnims": anim_map.get(stage_anim_id, []),
+                    "SlotData": []
+                }
+                
+                orig_act_types = []
+                stage_original_anim = next((a for a in old_json.get("RegisterAnim", []) if a.get("UniqueAnimID") == stage_anim_id), None)
+                if stage_original_anim and "ActTypes" in stage_original_anim:
+                    orig_act_types = stage_original_anim["ActTypes"]
+                
+                for actor_idx in range(len(anim_map.get(stage_anim_id, []))):
+                    slot_data = {
+                        "ActorSlot": actor_idx,
+                    }
+                    
+                    if "SpeedMod" in stage:
+                        slot_data["SpeedMod"] = speed_mod
+                    
+                    act_types = []
+                    
+                    for act_type in orig_act_types:
+                        if act_type.get("ActorSlot") == actor_idx:
+                            act = act_type.get("ActType", "")
+                            location = act_type.get("ActLocation", "")
+                            
+                            normalized_location = normalize_act_location(location)
+                            normalized_act = normalize_act_type(act, location)
+                            
+                            if normalized_act and normalized_location:
+                                act_types.append(f"{normalized_act}_{normalized_location}")
+                    
+                    if not act_types:
+                        for tag in tags:
+                            act_type = get_act_type_for_tag(tag, actor_idx)
+                            if act_type and act_type not in act_types:
+                                act_types.append(act_type)
+                    
+                    if not act_types:
+                        if actor_idx == 0:
+                            act_types.append("Penetrated_Vaginal")
+                        else:
+                            act_types.append("Penetrating_Vaginal")
+                    
+                    if act_types:
+                        slot_data["ActTypes"] = act_types
+                    
+                    slot_data = {k: v for k, v in slot_data.items() if v is not None}
+                    new_stage["SlotData"].append(slot_data)
+                
+                if stage_anim_id in climax_map:
+                    new_stage["ClimaxVar"] = []
+                    
+                    for climax_info in climax_map[stage_anim_id]:
+                        climax_var = {
+                            "SlotsToClimax": climax_info["slots_to_climax"],
+                            "SlotAnims": climax_info["climax_anim_slots"],
+                            "SlotData": []
+                        }
+                        
+                        for actor_idx, slot_id in enumerate(climax_info["climax_anim_slots"]):
+                            if actor_idx >= len(new_stage["SlotData"]):
+                                continue
+                                
+                            slot_data = {
+                                "ActorSlot": actor_idx
+                            }
+                            
+                            if actor_idx in climax_info["climax_locations"]:
+                                slot_data["ClimaxLocation"] = climax_info["climax_locations"][actor_idx]
+                            
+                            if "ActTypes" in new_stage["SlotData"][actor_idx]:
+                                slot_data["ActTypes"] = new_stage["SlotData"][actor_idx]["ActTypes"]
+                            
+                            climax_var["SlotData"].append(slot_data)
+                        
+                        new_stage["ClimaxVar"].append(climax_var)
+                
+                new_event["Stages"].append(new_stage)
+            
+            new_json["SCakeAnimEvent"].append(new_event)
+        except Exception as e:
+            issues_log.log_issue(source_file, f"Event {event_idx}", f"Error processing event: {str(e)}", event)
+    
+    return new_json
 
 def process_files():
     """Process all JSON files in the anims folder"""
-    # ...existing code...
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    anims_dir = os.path.join(script_dir, "anims")
+    output_dir = os.path.join(script_dir, "output")
+    
+    ensure_directory(anims_dir)
+    ensure_directory(output_dir)
+    
+    json_files = [f for f in os.listdir(anims_dir) if f.lower().endswith('.json')]
+    
+    if not json_files:
+        print("No JSON files found in the 'anims' folder. Please add some files and try again.")
+        return
+    
+    for json_file in json_files:
+        input_path = os.path.join(anims_dir, json_file)
+        output_filename = os.path.splitext(json_file)[0] + "_Converted.json"
+        output_path = os.path.join(output_dir, output_filename)
+        
+        print(f"Processing: {json_file}")
+        
+        issues_log = IssuesLog(output_dir)
+        
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                try:
+                    old_json = json.load(f)
+                except json.JSONDecodeError as e:
+                    print(f"Error: Invalid JSON format in {json_file}")
+                    issues_log.log_issue(json_file, "JSON Parsing", f"Invalid JSON format: {str(e)}")
+                    issues_log.save_to_file(json_file)
+                    continue
+            
+            new_json = convert_animation(old_json, json_file, issues_log)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(new_json, f, indent=4)
+            
+            print(f"Successfully converted: {output_filename}")
+            
+            issues_path = issues_log.save_to_file(json_file)
+            if issues_path:
+                print(f"Some conversion issues were encountered. See: {issues_path}")
+            
+        except Exception as e:
+            print(f"Error processing {json_file}: {str(e)}")
+            issues_log.log_issue(json_file, "General", f"Unhandled error: {str(e)}")
+            issues_log.save_to_file(json_file)
+    
+    print("\nConversion complete!")
+    print(f"Converted files are in: {output_dir}")
 
 def display_menu():
     """Display the main menu for the converter"""
