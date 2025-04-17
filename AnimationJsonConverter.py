@@ -356,163 +356,6 @@ def infer_tags_from_equipment(equipment):
     
     return inferred_tags
 
-def enhance_tags_in_converted_file(file_path, output_dir, issues_log):
-    """Add or enhance tags in already-converted JSON files"""
-    print(f"Enhancing tags in: {os.path.basename(file_path)}")
-    
-    try:
-        # Load the converted JSON file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            converted_json = json.load(f)
-        
-        # Check if it's already in the new format (has SCakeAnimSlot and SCakeAnimEvent)
-        if "SCakeAnimSlot" not in converted_json or "SCakeAnimEvent" not in converted_json:
-            issues_log.log_issue(os.path.basename(file_path), "Format", 
-                                "File doesn't appear to be in SCake 0.5.2+ format")
-            return None
-            
-        # Track all inferred tags by animation ID
-        animation_tags = {}
-        
-        # Enhanced animation slots with tags
-        for slot_idx, anim_slot in enumerate(converted_json["SCakeAnimSlot"]):
-            unique_id = anim_slot.get("UniqueID", f"Unknown_{slot_idx}")
-            
-            # Skip if the animation already has tags
-            if "Tags" in anim_slot and anim_slot["Tags"]:
-                # Just store for later use with events
-                base_id = unique_id.rsplit('_', 1)[0] if '_' in unique_id else unique_id
-                animation_tags[base_id] = anim_slot["Tags"]
-                continue
-                
-            # Infer tags based on the animation name/ID
-            name_tags = infer_tags_from_name(unique_id)
-            
-            # Extract act types from this slot if possible
-            act_types_list = []
-            for event in converted_json.get("SCakeAnimEvent", []):
-                for stage in event.get("Stages", []):
-                    if unique_id in stage.get("SlotAnims", []):
-                        for slot_data in stage.get("SlotData", []):
-                            if slot_data.get("ActorSlot") == 0 and "ActTypes" in slot_data:
-                                act_types_list.extend(slot_data["ActTypes"])
-            
-            # Infer tags from act types
-            act_tags = infer_tags_from_act_types(act_types_list)
-            
-            # Infer tags based on equipment requirements
-            equip_tags = infer_tags_from_equipment(anim_slot.get("SEquipReq", []))
-            
-            # Get base ID (without the actor number suffix)
-            base_id = unique_id.rsplit('_', 1)[0] if '_' in unique_id else unique_id
-            
-            # Combine all inferred tags
-            all_tags = list(set(name_tags + act_tags + equip_tags))
-            
-            # Store by base ID for use with events
-            if all_tags and base_id not in animation_tags:
-                animation_tags[base_id] = all_tags
-                
-            # Add the tags to the animation slot
-            if all_tags:
-                anim_slot["Tags"] = all_tags
-                issues_log.log_issue(os.path.basename(file_path), f"Animation {unique_id}", 
-                                    f"Added inferred tags: {', '.join(all_tags)}")
-        
-        # Enhance event tags
-        for event in converted_json["SCakeAnimEvent"]:
-            event_id = event.get("UniqueID", "Unknown_Event")
-            
-            # Skip if the event already has tags
-            if "AddTags" in event and event["AddTags"]:
-                continue
-                
-            # Infer tags from the event ID/name
-            event_tags = infer_tags_from_name(event_id)
-            
-            # Look for animation tags from this event's stages
-            anim_tags = []
-            first_anim_id = None
-            
-            # Get first animation for actor count tags
-            for stage in event.get("Stages", []):
-                if stage.get("SlotAnims"):
-                    first_slot = stage["SlotAnims"][0]
-                    first_anim_id = first_slot.rsplit('_', 1)[0] if '_' in first_slot else first_slot
-                    break
-            
-            # Get animation tags
-            for stage in event.get("Stages", []):
-                for slot in stage.get("SlotAnims", []):
-                    base_id = slot.rsplit('_', 1)[0] if '_' in slot else slot
-                    if base_id in animation_tags:
-                        anim_tags.extend(animation_tags[base_id])
-            
-            # Add default tags based on actor count
-            actor_count = event.get("ActorCount", 1)
-            if actor_count in DEFAULT_ACTOR_COUNT_TAGS:
-                event_tags.extend(DEFAULT_ACTOR_COUNT_TAGS[actor_count])
-            
-            # Add unique act types to tag inference
-            act_type_tags = []
-            for stage in event.get("Stages", []):
-                for slot_data in stage.get("SlotData", []):
-                    if "ActTypes" in slot_data:
-                        act_type_tags.extend(infer_tags_from_act_types(slot_data["ActTypes"]))
-            
-            # Combine all tags, remove duplicates
-            all_tags = list(set(event_tags + anim_tags + act_type_tags))
-            
-            # Add tags to the event
-            if all_tags:
-                event["AddTags"] = all_tags
-                issues_log.log_issue(os.path.basename(file_path), f"Event {event_id}", 
-                                    f"Added inferred tags: {', '.join(all_tags)}")
-        
-        # Save the enhanced file
-        output_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}_Enhanced.json"
-        output_path = os.path.join(output_dir, output_filename)
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(converted_json, f, indent=4)
-            
-        print(f"Tags enhanced and saved to: {output_filename}")
-        return output_path
-        
-    except Exception as e:
-        issues_log.log_issue(os.path.basename(file_path), "General", f"Error enhancing tags: {str(e)}")
-        print(f"Error enhancing tags in {os.path.basename(file_path)}: {str(e)}")
-        return None
-
-def process_tag_enhancement_mode():
-    """Process files in tag enhancement mode"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    input_dir = os.path.join(script_dir, "enhance")
-    output_dir = os.path.join(script_dir, "enhanced")
-    
-    ensure_directory(input_dir)
-    ensure_directory(output_dir)
-    
-    json_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.json')]
-    
-    if not json_files:
-        print("No JSON files found in the 'enhance' folder. Please add already-converted JSON files and try again.")
-        return
-    
-    for json_file in json_files:
-        input_path = os.path.join(input_dir, json_file)
-        issues_log = IssuesLog(output_dir)
-        
-        result = enhance_tags_in_converted_file(input_path, output_dir, issues_log)
-        
-        if result:
-            issues_path = issues_log.save_to_file(json_file)
-            if issues_path:
-                print(f"Tag enhancement details logged to: {issues_path}")
-    
-    print("\nTag enhancement complete!")
-    print(f"Enhanced files are in: {output_dir}")
-
 def convert_animation(old_json, source_file, issues_log):
     """Convert old animation format to new format"""
     new_json = {
@@ -969,14 +812,176 @@ def convert_animation(old_json, source_file, issues_log):
     
     return new_json
 
+def enhance_tags_in_converted_file(file_path, output_dir, issues_log):
+    """Add or enhance tags in already-converted JSON files"""
+    print(f"Enhancing tags in: {os.path.basename(file_path)}")
+    
+    try:
+        # Load the converted JSON file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            converted_json = json.load(f)
+        
+        # Check if it's already in the new format (has SCakeAnimSlot and SCakeAnimEvent)
+        if "SCakeAnimSlot" not in converted_json or "SCakeAnimEvent" not in converted_json:
+            issues_log.log_issue(os.path.basename(file_path), "Format", 
+                                "File doesn't appear to be in SCake 0.5.2+ format")
+            return None
+            
+        # Track all inferred tags by animation ID
+        animation_tags = {}
+        
+        # Enhanced animation slots with tags
+        for slot_idx, anim_slot in enumerate(converted_json["SCakeAnimSlot"]):
+            unique_id = anim_slot.get("UniqueID", f"Unknown_{slot_idx}")
+            
+            # Skip if the animation already has tags
+            if "Tags" in anim_slot and anim_slot["Tags"]:
+                # Just store for later use with events
+                base_id = unique_id.rsplit('_', 1)[0] if '_' in unique_id else unique_id
+                animation_tags[base_id] = anim_slot["Tags"]
+                continue
+                
+            # Infer tags based on the animation name/ID
+            name_tags = infer_tags_from_name(unique_id)
+            
+            # Extract act types from this slot if possible
+            act_types_list = []
+            for event in converted_json.get("SCakeAnimEvent", []):
+                for stage in event.get("Stages", []):
+                    if unique_id in stage.get("SlotAnims", []):
+                        for slot_data in stage.get("SlotData", []):
+                            if slot_data.get("ActorSlot") == 0 and "ActTypes" in slot_data:
+                                act_types_list.extend(slot_data["ActTypes"])
+            
+            # Infer tags from act types
+            act_tags = infer_tags_from_act_types(act_types_list)
+            
+            # Infer tags based on equipment requirements
+            equip_tags = infer_tags_from_equipment(anim_slot.get("SEquipReq", []))
+            
+            # Get base ID (without the actor number suffix)
+            base_id = unique_id.rsplit('_', 1)[0] if '_' in unique_id else unique_id
+            
+            # Combine all inferred tags
+            all_tags = list(set(name_tags + act_tags + equip_tags))
+            
+            # Store by base ID for use with events
+            if all_tags and base_id not in animation_tags:
+                animation_tags[base_id] = all_tags
+                
+            # Add the tags to the animation slot
+            if all_tags:
+                anim_slot["Tags"] = all_tags
+                issues_log.log_issue(os.path.basename(file_path), f"Animation {unique_id}", 
+                                    f"Added inferred tags: {', '.join(all_tags)}")
+        
+        # Enhance event tags
+        for event in converted_json["SCakeAnimEvent"]:
+            event_id = event.get("UniqueID", "Unknown_Event")
+            
+            # Skip if the event already has tags
+            if "AddTags" in event and event["AddTags"]:
+                continue
+                
+            # Infer tags from the event ID/name
+            event_tags = infer_tags_from_name(event_id)
+            
+            # Look for animation tags from this event's stages
+            anim_tags = []
+            first_anim_id = None
+            
+            # Get first animation for actor count tags
+            for stage in event.get("Stages", []):
+                if stage.get("SlotAnims"):
+                    first_slot = stage["SlotAnims"][0]
+                    first_anim_id = first_slot.rsplit('_', 1)[0] if '_' in first_slot else first_slot
+                    break
+            
+            # Get animation tags
+            for stage in event.get("Stages", []):
+                for slot in stage.get("SlotAnims", []):
+                    base_id = slot.rsplit('_', 1)[0] if '_' in slot else slot
+                    if base_id in animation_tags:
+                        anim_tags.extend(animation_tags[base_id])
+            
+            # Add default tags based on actor count
+            actor_count = event.get("ActorCount", 1)
+            if actor_count in DEFAULT_ACTOR_COUNT_TAGS:
+                event_tags.extend(DEFAULT_ACTOR_COUNT_TAGS[actor_count])
+            
+            # Add unique act types to tag inference
+            act_type_tags = []
+            for stage in event.get("Stages", []):
+                for slot_data in stage.get("SlotData", []):
+                    if "ActTypes" in slot_data:
+                        act_type_tags.extend(infer_tags_from_act_types(slot_data["ActTypes"]))
+            
+            # Combine all tags, remove duplicates
+            all_tags = list(set(event_tags + anim_tags + act_type_tags))
+            
+            # Add tags to the event
+            if all_tags:
+                event["AddTags"] = all_tags
+                issues_log.log_issue(os.path.basename(file_path), f"Event {event_id}", 
+                                    f"Added inferred tags: {', '.join(all_tags)}")
+        
+        # Save the enhanced file
+        output_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}_Enhanced.json"
+        output_path = os.path.join(output_dir, output_filename)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(converted_json, f, indent=4)
+            
+        print(f"Tags enhanced and saved to: {output_filename}")
+        return output_path
+        
+    except Exception as e:
+        issues_log.log_issue(os.path.basename(file_path), "General", f"Error enhancing tags: {str(e)}")
+        print(f"Error enhancing tags in {os.path.basename(file_path)}: {str(e)}")
+        return None
+
+def process_tag_enhancement_mode():
+    """Process files in tag enhancement mode"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    input_dir = os.path.join(script_dir, "enhance")
+    output_dir = os.path.join(script_dir, "enhanced")
+    logs_dir = os.path.join(script_dir, "logs")  # Add logs directory
+    
+    ensure_directory(input_dir)
+    ensure_directory(output_dir)
+    ensure_directory(logs_dir)  # Create logs directory
+    
+    json_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.json')]
+    
+    if not json_files:
+        print("No JSON files found in the 'enhance' folder. Please add already-converted JSON files and try again.")
+        return
+    
+    for json_file in json_files:
+        input_path = os.path.join(input_dir, json_file)
+        issues_log = IssuesLog(logs_dir)  # Use logs_dir instead of output_dir
+        
+        result = enhance_tags_in_converted_file(input_path, output_dir, issues_log)
+        
+        if result:
+            issues_path = issues_log.save_to_file(json_file)
+            if issues_path:
+                print(f"Tag enhancement details logged to: {issues_path}")
+    
+    print("\nTag enhancement complete!")
+    print(f"Enhanced files are in: {output_dir}")
+    print(f"Log files are in: {logs_dir}")  # Add this line at the end
+
 def process_files():
     """Process all JSON files in the anims folder"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     anims_dir = os.path.join(script_dir, "anims")
     output_dir = os.path.join(script_dir, "output")
+    logs_dir = os.path.join(script_dir, "logs")  # Add logs directory
     
     ensure_directory(anims_dir)
     ensure_directory(output_dir)
+    ensure_directory(logs_dir)  # Create logs directory
     
     json_files = [f for f in os.listdir(anims_dir) if f.lower().endswith('.json')]
     
@@ -991,7 +996,7 @@ def process_files():
         
         print(f"Processing: {json_file}")
         
-        issues_log = IssuesLog(output_dir)
+        issues_log = IssuesLog(logs_dir)  # Use logs_dir instead of output_dir
         
         try:
             with open(input_path, 'r', encoding='utf-8') as f:
@@ -1021,6 +1026,7 @@ def process_files():
     
     print("\nConversion complete!")
     print(f"Converted files are in: {output_dir}")
+    print(f"Log files are in: {logs_dir}")  # Add this line at the end
 
 def display_menu():
     """Display the main menu for the converter"""
@@ -1069,13 +1075,15 @@ if __name__ == "__main__":
         print("Running in conversion mode.")
         print("This tool converts old-format animation JSONs to the new SCake 0.6+ format.")
         print("Place your old JSON files in the 'anims' folder.")
-        print("Converted files will be placed in the 'output' folder.\n")
+        print("Converted files will be placed in the 'output' folder.")
+        print("Log files will be placed in the 'logs' folder.")  # Add this line
         process_files()
     else:  # mode == 'enhance'
         print("Running in tag enhancement mode.")
         print("This tool adds tags to already-converted SCake 0.6+ format files.")
         print("Place your converted JSON files in the 'enhance' folder.")
-        print("Enhanced files will be placed in the 'enhanced' folder.\n")
+        print("Enhanced files will be placed in the 'enhanced' folder.")
+        print("Log files will be placed in the 'logs' folder.")  # Add this line
         process_tag_enhancement_mode()
     
     print("\nOperation completed successfully!")
